@@ -19,7 +19,9 @@ def generate_permutations(founder: Founder, domain: str) -> list[str]:
     li = l[0] if l else ""
 
     def make(local: str) -> str | None:
-        return f"{local}@{domain}" if local else None
+        if not local or " " in local:
+            return None
+        return f"{local}@{domain}"
 
     def patterns_for(last: str, last_initial: str) -> list[str | None]:
         return [

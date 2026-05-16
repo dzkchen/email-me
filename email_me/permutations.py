@@ -5,62 +5,43 @@ from email_me.utils import normalize_name
 def generate_permutations(founder: Founder, domain: str) -> list[str]:
     f = normalize_name(founder.first_name)
     l = normalize_name(founder.last_name)
-
     fi = f[0] if f else ""
     li = l[0] if l else ""
 
     def make(local: str) -> str | None:
-        if not local:
-            return None
-        return f"{local}@{domain}"
+        return f"{local}@{domain}" if local else None
 
-    patterns = [
-        make(f),
-        make(f"{f}.{l}"),
-        make(f"{fi}.{l}"),
-        make(f"{f}{l}"),
-        make(f"{fi}{l}"),
-        make(f"{f}_{l}"),
-        make(f"{f}-{l}"),
-        make(l),
-        make(f"{l}.{f}"),
-        make(f"{l}{f}"),
-        make(fi),
-        make(f"{fi}{li}"),
-    ]
+    def patterns_for(last: str, last_initial: str) -> list[str | None]:
+        return [
+            make(f),
+            make(f"{f}.{last}"),
+            make(f"{fi}.{last}"),
+            make(f"{f}{last}"),
+            make(f"{fi}{last}"),
+            make(f"{f}_{last}"),
+            make(f"{f}-{last}"),
+            make(last),
+            make(f"{last}.{f}"),
+            make(f"{last}{f}"),
+            make(fi),
+            make(f"{fi}{last_initial}"),
+        ]
 
-    seen = set()
-    result = []
-    for email in patterns:
-        if email and email not in seen:
-            seen.add(email)
-            result.append(email)
+    seen: set[str] = set()
+    result: list[str] = []
 
-    # Compound last name variants
+    def add_patterns(pats: list[str | None]) -> None:
+        for email in pats:
+            if email and email not in seen:
+                seen.add(email)
+                result.append(email)
+
+    add_patterns(patterns_for(l, li))
+
     if " " in l:
         l_compact = l.replace(" ", "")
         l_token = l.rsplit(" ", 1)[-1]
-        li_compact = l_compact[0] if l_compact else ""
-        li_token = l_token[0] if l_token else ""
-
-        for variant_l, variant_li in [(l_compact, li_compact), (l_token, li_token)]:
-            compound_patterns = [
-                make(f),
-                make(f"{f}.{variant_l}"),
-                make(f"{fi}.{variant_l}"),
-                make(f"{f}{variant_l}"),
-                make(f"{fi}{variant_l}"),
-                make(f"{f}_{variant_l}"),
-                make(f"{f}-{variant_l}"),
-                make(variant_l),
-                make(f"{variant_l}.{f}"),
-                make(f"{variant_l}{f}"),
-                make(fi),
-                make(f"{fi}{variant_li}"),
-            ]
-            for email in compound_patterns:
-                if email and email not in seen:
-                    seen.add(email)
-                    result.append(email)
+        add_patterns(patterns_for(l_compact, l_compact[0] if l_compact else ""))
+        add_patterns(patterns_for(l_token, l_token[0] if l_token else ""))
 
     return result

@@ -22,16 +22,14 @@ _EXCLUDED_DOMAINS = {
 
 
 def _derive_domain(href: str) -> str:
-    netloc = urlparse(href).netloc.lower().lstrip("www.")
+    netloc = urlparse(href).netloc.lower().removeprefix("www.")
     parts = netloc.split(".")
-    if len(parts) > 2:
-        netloc = ".".join(parts[-2:])
-    return netloc
+    return ".".join(parts[-2:]) if len(parts) > 2 else netloc
 
 
-def _is_excluded(href: str) -> bool:
-    netloc = urlparse(href).netloc.lower().lstrip("www.")
-    return any(netloc == d or netloc.endswith("." + d) for d in _EXCLUDED_DOMAINS)
+def _split_name(full_name: str) -> tuple[str, str]:
+    parts = full_name.split()
+    return parts[0], " ".join(parts[1:]) if len(parts) > 1 else parts[0]
 
 
 def _parse_data_page(soup: BeautifulSoup) -> tuple[str, str, list[Founder]]:
@@ -54,9 +52,7 @@ def _parse_data_page(soup: BeautifulSoup) -> tuple[str, str, list[Founder]]:
         full_name = f.get("full_name", "").strip()
         if not full_name:
             continue
-        parts = full_name.split()
-        first_name = parts[0]
-        last_name = " ".join(parts[1:]) if len(parts) > 1 else parts[0]
+        first_name, last_name = _split_name(full_name)
         founders.append(Founder(
             first_name=first_name,
             last_name=last_name,
@@ -89,9 +85,7 @@ def _parse_html_fallback(soup: BeautifulSoup) -> tuple[str, str, list[Founder]]:
             text = h3.get_text(strip=True)
             if not text or text == "Active Founders":
                 continue
-            parts = text.split()
-            first_name = parts[0]
-            last_name = " ".join(parts[1:]) if len(parts) > 1 else parts[0]
+            first_name, last_name = _split_name(text)
             title = ""
             parent_div = h3.find_parent()
             if parent_div:
@@ -111,11 +105,13 @@ def _parse_html_fallback(soup: BeautifulSoup) -> tuple[str, str, list[Founder]]:
     domain = ""
     for a in soup.find_all("a", href=True):
         href = a["href"]
-        if not href.startswith("http") or _is_excluded(href):
+        if not href.startswith("http"):
             continue
-        if "ycombinator.com" in href:
+        netloc = urlparse(href).netloc.lower().removeprefix("www.")
+        if any(netloc == d or netloc.endswith("." + d) for d in _EXCLUDED_DOMAINS):
             continue
-        domain = _derive_domain(href)
+        parts = netloc.split(".")
+        domain = ".".join(parts[-2:]) if len(parts) > 2 else netloc
         if domain:
             break
 

@@ -26,18 +26,35 @@ YC_URL_RE = re.compile(r'^https?://www\.ycombinator\.com/companies/[a-zA-Z0-9\-_
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="email-me",
-        description="Find and verify founder email addresses from a YC company page.",
+        description="Find and verify founder email addresses from YC company pages.",
     )
-    parser.add_argument("yc_url", help="YC company page URL")
-    parser.add_argument("count", type=int, nargs="?", default=2, help="Number of verified emails to find (1-20, default: 2)")
-    parser.add_argument("--format", choices=["table", "json", "csv"], default="table")
-    parser.add_argument("--timeout", type=int, default=10)
-    parser.add_argument("--delay", type=float, default=1.0)
-    parser.add_argument("--include-catch-all", action="store_true", default=True)
-    parser.add_argument("--no-catch-all", dest="include_catch_all", action="store_false")
-    parser.add_argument("--include-unknown", action="store_true")
-    parser.add_argument("--verbose", action="store_true")
-    parser.add_argument("--no-smtp", action="store_true")
+    subparsers = parser.add_subparsers(dest="command")
+
+    single = subparsers.add_parser("single", help="Process one YC company URL")
+    single.add_argument("yc_url", help="YC company page URL")
+    single.add_argument("count", type=int, nargs="?", default=2, help="Number of verified emails to find (1-20, default: 2)")
+    single.add_argument("--format", choices=["table", "json", "csv"], default="table")
+    single.add_argument("--timeout", type=int, default=10)
+    single.add_argument("--delay", type=float, default=1.0)
+    single.add_argument("--include-catch-all", action="store_true", default=True)
+    single.add_argument("--no-catch-all", dest="include_catch_all", action="store_false")
+    single.add_argument("--include-unknown", action="store_true")
+    single.add_argument("--verbose", action="store_true")
+    single.add_argument("--no-smtp", action="store_true")
+
+    batch = subparsers.add_parser("batch", help="Process a file of YC company URLs")
+    batch.add_argument("file", help="Path to text file with one YC URL per line")
+    batch.add_argument("--count", type=int, default=4, help="Emails to find per company (1-20, default: 4)")
+    batch.add_argument("--format", choices=["table", "json", "csv"], default="table")
+    batch.add_argument("--timeout", type=int, default=10)
+    batch.add_argument("--delay", type=float, default=1.0)
+    batch.add_argument("--include-catch-all", action="store_true", default=True)
+    batch.add_argument("--no-catch-all", dest="include_catch_all", action="store_false")
+    batch.add_argument("--include-unknown", action="store_true")
+    batch.add_argument("--verbose", action="store_true")
+    batch.add_argument("--no-smtp", action="store_true")
+    batch.add_argument("--stop-on-error", action="store_true")
+
     return parser
 
 
@@ -183,22 +200,84 @@ def format_csv(results: list[VerificationResult]) -> str:
     return buf.getvalue().rstrip("\r\n")
 
 
-def cli() -> None:
-    parser = build_parser()
-    args = parser.parse_args()
-    validate_args(args)
-    company, results, probed = run(args)
+def _run_batch_command(args: argparse.Namespace) -> None:
+    from email_me.batch import (
+        load_urls,
+        run_batch,
+        format_batch_table,
+        format_batch_json,
+        format_batch_csv,
+    )
+
+    if not (1 <= args.count <= 20):
+        print("Error: count must be between 1 and 20", file=sys.stderr)
+        sys.exit(3)
+
+    try:
+        urls = load_urls(args.file)
+    except FileNotFoundError:
+        print(f"Error: File not found: {args.file}", file=sys.stderr)
+        sys.exit(1)
+
+    if not urls:
+        print("No valid URLs found in file.", file=sys.stderr)
+        sys.exit(0)
+
+    try:
+        batch = run_batch(
+            urls=urls,
+            count=args.count,
+            delay=args.delay,
+            include_catch_all=args.include_catch_all,
+            include_unknown=args.include_unknown,
+            no_smtp=args.no_smtp,
+            stop_on_error=args.stop_on_error,
+            verbose=args.verbose,
+        )
+    except requests.exceptions.ConnectionError:
+        print("Error: Network appears down — aborting batch", file=sys.stderr)
+        sys.exit(1)
 
     if args.format == "table":
-        print(format_table(company, results, probed))
+        print(format_batch_table(batch))
     elif args.format == "json":
-        print(format_json(company, results, probed, args.count))
+        print(format_batch_json(batch))
     elif args.format == "csv":
-        print(format_csv(results))
+        print(format_batch_csv(batch))
 
-    if not results:
-        print(
-            f"No verified email addresses found after probing {probed} permutations.",
-            file=sys.stderr,
-        )
-    sys.exit(0 if results else 2)
+    sys.exit(0 if batch.failed_companies == 0 else 2)
+
+
+def cli() -> None:
+    argv = sys.argv[1:]
+    # Backward compat: if first arg looks like a URL, route to the single subcommand
+    if argv and argv[0].startswith("http"):
+        argv = ["single"] + argv
+
+    parser = build_parser()
+    args = parser.parse_args(argv)
+
+    if args.command is None:
+        parser.print_help()
+        sys.exit(3)
+
+    if args.command == "single":
+        validate_args(args)
+        company, results, probed = run(args)
+
+        if args.format == "table":
+            print(format_table(company, results, probed))
+        elif args.format == "json":
+            print(format_json(company, results, probed, args.count))
+        elif args.format == "csv":
+            print(format_csv(results))
+
+        if not results:
+            print(
+                f"No verified email addresses found after probing {probed} permutations.",
+                file=sys.stderr,
+            )
+        sys.exit(0 if results else 2)
+
+    elif args.command == "batch":
+        _run_batch_command(args)

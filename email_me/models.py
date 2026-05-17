@@ -44,3 +44,39 @@ class CompanyNotFoundError(Exception):
 
 class ScrapingError(Exception):
     pass
+
+
+@dataclass
+class CompanyResult:
+    url: str
+    company: Optional[CompanyData]
+    results: list[VerificationResult]
+    probed_count: int
+    error: Optional[str]
+
+    @property
+    def success(self) -> bool:
+        return self.error is None and len(self.results) > 0
+
+
+@dataclass
+class BatchResult:
+    company_results: list[CompanyResult]
+    requested_count: int
+    timestamp: str
+
+    @property
+    def total_companies(self) -> int:
+        return len(self.company_results)
+
+    @property
+    def successful_companies(self) -> int:
+        return sum(1 for r in self.company_results if r.success)
+
+    @property
+    def failed_companies(self) -> int:
+        return self.total_companies - self.successful_companies
+
+    @property
+    def total_emails_found(self) -> int:
+        return sum(len(r.results) for r in self.company_results)

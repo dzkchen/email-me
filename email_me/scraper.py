@@ -1,8 +1,8 @@
 import html as html_lib
 import json
-from urllib.parse import urlparse
 
 import requests
+import tldextract
 from bs4 import BeautifulSoup
 
 from .models import CompanyData, Founder, CompanyNotFoundError, ScrapingError
@@ -21,10 +21,11 @@ _EXCLUDED_DOMAINS = {
 }
 
 
-def _derive_domain(href: str) -> str:
-    netloc = urlparse(href).netloc.lower().removeprefix("www.")
-    parts = netloc.split(".")
-    return ".".join(parts[-2:]) if len(parts) > 2 else netloc
+def _derive_domain(url: str) -> str:
+    extracted = tldextract.extract(url)
+    if not extracted.domain or not extracted.suffix:
+        raise ScrapingError(f"Could not determine root domain from URL: {url}")
+    return f"{extracted.domain}.{extracted.suffix}"
 
 
 def _split_name(full_name: str) -> tuple[str, str]:
@@ -107,13 +108,14 @@ def _parse_html_fallback(soup: BeautifulSoup) -> tuple[str, str, list[Founder]]:
         href = a["href"]
         if not href.startswith("http"):
             continue
-        netloc = urlparse(href).netloc.lower().removeprefix("www.")
-        if any(netloc == d or netloc.endswith("." + d) for d in _EXCLUDED_DOMAINS):
+        try:
+            root = _derive_domain(href)
+        except ScrapingError:
             continue
-        parts = netloc.split(".")
-        domain = ".".join(parts[-2:]) if len(parts) > 2 else netloc
-        if domain:
-            break
+        if root in _EXCLUDED_DOMAINS:
+            continue
+        domain = root
+        break
 
     return company_name, domain, founders
 

@@ -1,7 +1,7 @@
 import pytest
 import responses as responses_lib
 
-from email_me.scraper import scrape_yc_page
+from email_me.scraper import scrape_yc_page, _derive_domain
 from email_me.models import CompanyNotFoundError, ScrapingError
 
 STRIPE_HTML = """
@@ -131,6 +131,22 @@ def test_no_founders_raises_scraping_error():
     )
     with pytest.raises(ScrapingError, match="No founders found"):
         scrape_yc_page("https://www.ycombinator.com/companies/empty")
+
+
+@pytest.mark.parametrize("url,expected", [
+    ("https://www.stripe.com", "stripe.com"),
+    ("https://example.co.uk", "example.co.uk"),
+    ("https://app.example.com.au", "example.com.au"),
+    ("https://docs.example.co.jp", "example.co.jp"),
+    ("https://sub.sub2.example.com", "example.com"),
+])
+def test_derive_domain(url, expected):
+    assert _derive_domain(url) == expected
+
+
+def test_derive_domain_raises_on_invalid_url():
+    with pytest.raises(ScrapingError, match="Could not determine root domain"):
+        _derive_domain("https://localhost")
 
 
 @responses_lib.activate

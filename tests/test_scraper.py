@@ -1,4 +1,5 @@
 import pytest
+import requests
 import responses as responses_lib
 
 from email_me.scraper import scrape_yc_page, _derive_domain
@@ -160,3 +161,14 @@ def test_founder_full_name_and_title():
     data = scrape_yc_page("https://www.ycombinator.com/companies/stripe")
     assert data.founders[0].full_name == "Patrick Collison"
     assert "Founder" in data.founders[0].title
+
+
+@responses_lib.activate
+def test_scrape_timeout_raises_scraping_error():
+    responses_lib.add(
+        responses_lib.GET,
+        "https://www.ycombinator.com/companies/stripe",
+        body=requests.exceptions.Timeout(),
+    )
+    with pytest.raises(ScrapingError, match="timed out"):
+        scrape_yc_page("https://www.ycombinator.com/companies/stripe")

@@ -123,8 +123,10 @@ def _parse_html_fallback(soup: BeautifulSoup) -> tuple[str, str, list[Founder]]:
 def scrape_yc_page(url: str) -> CompanyData:
     try:
         response = requests.get(url, headers=HEADERS, timeout=10, allow_redirects=True)
-    except requests.exceptions.ConnectionError:
-        raise ScrapingError("Could not reach ycombinator.com — check your network connection")
+    except requests.exceptions.Timeout as e:
+        raise ScrapingError(f"Request timed out after 10s fetching {url}.") from e
+    except requests.exceptions.RequestException as e:
+        raise ScrapingError(f"Network error fetching {url}: {e}") from e
 
     if response.status_code == 404:
         raise CompanyNotFoundError(f"No YC company found at: {url}")

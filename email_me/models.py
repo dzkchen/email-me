@@ -36,6 +36,8 @@ class VerificationResult:
     smtp_message: Optional[str] = None
     latency_ms: int = 0
     catch_all_domain: bool = False
+    rank: int = 0
+    confidence: int = 0
 
 
 class CompanyNotFoundError(Exception):

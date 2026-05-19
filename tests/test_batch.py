@@ -347,7 +347,7 @@ def test_format_batch_csv_headers():
     batch = _make_batch_with_error()
     output = format_batch_csv(batch)
     first_line = output.splitlines()[0]
-    assert first_line == "company_url,company_name,domain,email,founder,status,mx_host,smtp_code,latency_ms,error"
+    assert first_line == "company_url,company_name,domain,email,founder,status,rank,confidence,mx_host,smtp_code,latency_ms,error"
 
 
 def test_format_batch_csv_error_row_empty_email():

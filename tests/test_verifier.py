@@ -6,7 +6,7 @@ import dns.resolver
 import pytest
 
 from email_me.models import VerificationStatus
-from email_me.verifier import verify_email
+from email_me.verifier import verify_email, _compute_confidence
 
 
 def _mock_mx(mocker, mx_hostname="mail.example.com"):
@@ -207,3 +207,64 @@ def test_smtp_connect_exception_returns_unknown(mocker, exc):
     mock_smtp_cls.return_value.__enter__.return_value.connect.side_effect = exc
     result = verify_email("user@example.com", {}, delay=0)
     assert result.status == VerificationStatus.UNKNOWN
+
+
+# ---------------------------------------------------------------------------
+# Confidence scoring
+# ---------------------------------------------------------------------------
+
+def test_compute_confidence_verified_rank1():
+    assert _compute_confidence(1, VerificationStatus.VERIFIED) == 100
+
+
+def test_compute_confidence_catch_all_rank1():
+    assert _compute_confidence(1, VerificationStatus.CATCH_ALL) == 70
+
+
+def test_compute_confidence_does_not_exist():
+    assert _compute_confidence(1, VerificationStatus.DOES_NOT_EXIST) == 0
+
+
+def test_compute_confidence_undeliverable():
+    assert _compute_confidence(1, VerificationStatus.UNDELIVERABLE) == 0
+
+
+def test_compute_confidence_verified_rank3():
+    assert _compute_confidence(3, VerificationStatus.VERIFIED) == 90
+
+
+def test_compute_confidence_clamped_to_100():
+    assert _compute_confidence(1, VerificationStatus.VERIFIED) <= 100
+
+
+def test_compute_confidence_clamped_to_0():
+    assert _compute_confidence(1, VerificationStatus.DOES_NOT_EXIST) >= 0
+
+
+def test_compute_confidence_unknown_rank():
+    assert _compute_confidence(99, VerificationStatus.VERIFIED) == 45  # 5 + 40
+
+
+def test_confidence_attached_to_verified_result(mocker):
+    _mock_mx(mocker)
+    _mock_smtp(mocker, rcpt_side_effect=[(550, b"Rejected"), (250, b"OK")])
+    result = verify_email("real@example.com", {}, rank=1, delay=0)
+    assert result.rank == 1
+    assert result.confidence == 100
+
+
+def test_confidence_attached_to_catch_all_result(mocker):
+    _mock_mx(mocker)
+    _mock_smtp(mocker, rcpt_side_effect=[(250, b"OK")])
+    result = verify_email("anyone@catchall.com", {}, rank=1, delay=0)
+    assert result.rank == 1
+    assert result.confidence == 70
+
+
+def test_confidence_reflects_rank(mocker):
+    _mock_mx(mocker)
+    _mock_smtp(mocker, rcpt_side_effect=[(550, b"Rejected"), (250, b"OK"), (550, b"Rejected"), (250, b"OK")])
+    cache = {}
+    r1 = verify_email("real@example.com", cache, rank=1, delay=0)
+    r2 = verify_email("real2@example.com", cache, rank=3, delay=0)
+    assert r1.confidence > r2.confidence

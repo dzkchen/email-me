@@ -90,26 +90,26 @@ def run(args: argparse.Namespace) -> tuple[CompanyData, list[VerificationResult]
     log(f"[INFO] Domain: {company.domain}")
 
     per_founder = [
-        [(email, founder.full_name) for email in generate_permutations(founder, company.domain)]
+        [(email, rank, founder.full_name) for email, rank in generate_permutations(founder, company.domain)]
         for founder in company.founders
     ]
     seen: set[str] = set()
-    master_list: list[tuple[str, str]] = []
+    master_list: list[tuple[str, int, str]] = []
     for round_entries in zip_longest(*per_founder):
         for entry in round_entries:
             if entry is None:
                 continue
-            email, name = entry
+            email, rank, name = entry
             if email not in seen:
                 seen.add(email)
-                master_list.append((email, name))
+                master_list.append((email, rank, name))
 
     log(f"[INFO] Generated {len(master_list)} permutations across {len(company.founders)} founders")
 
     if args.no_smtp:
         results = [
-            VerificationResult(email=e, founder_name=n, status=VerificationStatus.UNKNOWN)
-            for e, n in master_list[: args.count]
+            VerificationResult(email=e, founder_name=n, status=VerificationStatus.UNKNOWN, rank=r)
+            for e, r, n in master_list[: args.count]
         ]
         return company, results, len(master_list)
 
@@ -123,10 +123,10 @@ def run(args: argparse.Namespace) -> tuple[CompanyData, list[VerificationResult]
     if args.include_unknown:
         accept_statuses.add(VerificationStatus.UNKNOWN)
 
-    for email, founder_name in master_list:
+    for email, rank, founder_name in master_list:
         if len(verified) >= args.count:
             break
-        result = verify_email(email, mx_cache, delay=args.delay)
+        result = verify_email(email, mx_cache, rank=rank, delay=args.delay)
         result.founder_name = founder_name
         probed += 1
         code_str = str(result.smtp_code) if result.smtp_code is not None else "-"
@@ -134,6 +134,7 @@ def run(args: argparse.Namespace) -> tuple[CompanyData, list[VerificationResult]
         if result.status in accept_statuses:
             verified.append(result)
 
+    verified.sort(key=lambda r: r.confidence, reverse=True)
     return company, verified, probed
 
 
@@ -144,18 +145,25 @@ def format_table(company: CompanyData, results: list[VerificationResult], probed
     col_founder = max(col_founder, len("Founder"))
     col_status = max((len(r.status.value) for r in results), default=6)
     col_status = max(col_status, len("Status"))
+    col_conf = len("Confidence")
 
-    sep = "━" * (4 + col_email + 3 + col_founder + 3 + col_status + 1)
-    row_sep = "─" * 3 + "┼" + "─" * (col_email + 2) + "┼" + "─" * (col_founder + 2) + "┼" + "─" * (col_status + 2)
-
+    sep = "━" * (4 + col_email + 3 + col_founder + 3 + col_status + 3 + col_conf + 1)
+    row_sep = (
+        "─" * 3 + "┼" + "─" * (col_email + 2)
+        + "┼" + "─" * (col_founder + 2)
+        + "┼" + "─" * (col_status + 2)
+        + "┼" + "─" * (col_conf + 2)
+    )
     header = (
-        f" {'#':>2} │ {'Email':<{col_email}} │ {'Founder':<{col_founder}} │ {'Status':<{col_status}}"
+        f" {'#':>2} │ {'Email':<{col_email}} │ {'Founder':<{col_founder}}"
+        f" │ {'Status':<{col_status}} │ {'Confidence':>{col_conf}}"
     )
 
     lines = [f"email-me results for {company.domain}", sep, header, row_sep]
     for i, r in enumerate(results, 1):
         lines.append(
-            f" {i:>2} │ {r.email:<{col_email}} │ {r.founder_name:<{col_founder}} │ {r.status.value.upper():<{col_status}}"
+            f" {i:>2} │ {r.email:<{col_email}} │ {r.founder_name:<{col_founder}}"
+            f" │ {r.status.value.upper():<{col_status}} │ {r.confidence:>{col_conf}}"
         )
     lines.append(sep)
     lines.append("")
@@ -179,6 +187,8 @@ def format_json(
                 "email": r.email,
                 "founder": r.founder_name,
                 "status": r.status.value,
+                "rank": r.rank,
+                "confidence": r.confidence,
                 "mx_host": r.mx_host,
                 "smtp_code": r.smtp_code,
                 "latency_ms": r.latency_ms,
@@ -194,9 +204,9 @@ def format_json(
 def format_csv(results: list[VerificationResult]) -> str:
     buf = io.StringIO()
     writer = csv.writer(buf)
-    writer.writerow(["email", "founder", "status", "mx_host", "smtp_code", "latency_ms"])
+    writer.writerow(["email", "founder", "status", "rank", "confidence", "mx_host", "smtp_code", "latency_ms"])
     for r in results:
-        writer.writerow([r.email, r.founder_name, r.status.value, r.mx_host or "", r.smtp_code or "", r.latency_ms])
+        writer.writerow([r.email, r.founder_name, r.status.value, r.rank, r.confidence, r.mx_host or "", r.smtp_code or "", r.latency_ms])
     return buf.getvalue().rstrip("\r\n")
 
 

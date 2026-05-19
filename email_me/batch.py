@@ -63,26 +63,26 @@ def _process_company(
     log(f"[INFO] Domain: {company.domain}")
 
     per_founder = [
-        [(email, founder.full_name) for email in generate_permutations(founder, company.domain)]
+        [(email, rank, founder.full_name) for email, rank in generate_permutations(founder, company.domain)]
         for founder in company.founders
     ]
     seen: set[str] = set()
-    master_list: list[tuple[str, str]] = []
+    master_list: list[tuple[str, int, str]] = []
     for round_entries in zip_longest(*per_founder):
         for entry in round_entries:
             if entry is None:
                 continue
-            email, name = entry
+            email, rank, name = entry
             if email not in seen:
                 seen.add(email)
-                master_list.append((email, name))
+                master_list.append((email, rank, name))
 
     log(f"[INFO] Generated {len(master_list)} permutations across {len(company.founders)} founders")
 
     if no_smtp:
         results = [
-            VerificationResult(email=e, founder_name=n, status=VerificationStatus.UNKNOWN)
-            for e, n in master_list[:count]
+            VerificationResult(email=e, founder_name=n, status=VerificationStatus.UNKNOWN, rank=r)
+            for e, r, n in master_list[:count]
         ]
         return CompanyResult(url=url, company=company, results=results, probed_count=len(master_list), error=None)
 
@@ -94,10 +94,10 @@ def _process_company(
 
     verified: list[VerificationResult] = []
     probed = 0
-    for email, founder_name in master_list:
+    for email, rank, founder_name in master_list:
         if len(verified) >= count:
             break
-        result = verify_email(email, mx_cache, delay=delay)
+        result = verify_email(email, mx_cache, rank=rank, delay=delay)
         result.founder_name = founder_name
         probed += 1
         code_str = str(result.smtp_code) if result.smtp_code is not None else "-"
@@ -105,6 +105,7 @@ def _process_company(
         if result.status in accept_statuses:
             verified.append(result)
 
+    verified.sort(key=lambda r: r.confidence, reverse=True)
     return CompanyResult(url=url, company=company, results=verified, probed_count=probed, error=None)
 
 
@@ -186,13 +187,23 @@ def format_batch_table(batch: BatchResult) -> str:
             col_email = max(max(len(r.email) for r in cr.results), len("Email"))
             col_founder = max(max(len(r.founder_name) for r in cr.results), len("Founder"))
             col_status = max(max(len(r.status.value) for r in cr.results), len("Status"))
-            row_sep = "─" * 3 + "┼" + "─" * (col_email + 2) + "┼" + "─" * (col_founder + 2) + "┼" + "─" * (col_status + 2)
-            header = f" {'#':>2} │ {'Email':<{col_email}} │ {'Founder':<{col_founder}} │ {'Status':<{col_status}}"
+            col_conf = len("Confidence")
+            row_sep = (
+                "─" * 3 + "┼" + "─" * (col_email + 2)
+                + "┼" + "─" * (col_founder + 2)
+                + "┼" + "─" * (col_status + 2)
+                + "┼" + "─" * (col_conf + 2)
+            )
+            header = (
+                f" {'#':>2} │ {'Email':<{col_email}} │ {'Founder':<{col_founder}}"
+                f" │ {'Status':<{col_status}} │ {'Confidence':>{col_conf}}"
+            )
             lines.append(header)
             lines.append(row_sep)
             for j, r in enumerate(cr.results, 1):
                 lines.append(
-                    f" {j:>2} │ {r.email:<{col_email}} │ {r.founder_name:<{col_founder}} │ {r.status.value.upper():<{col_status}}"
+                    f" {j:>2} │ {r.email:<{col_email}} │ {r.founder_name:<{col_founder}}"
+                    f" │ {r.status.value.upper():<{col_status}} │ {r.confidence:>{col_conf}}"
                 )
 
     lines.append("")
@@ -218,6 +229,8 @@ def format_batch_json(batch: BatchResult) -> str:
                     "email": r.email,
                     "founder": r.founder_name,
                     "status": r.status.value,
+                    "rank": r.rank,
+                    "confidence": r.confidence,
                     "mx_host": r.mx_host,
                     "smtp_code": r.smtp_code,
                     "latency_ms": r.latency_ms,
@@ -247,7 +260,7 @@ def format_batch_csv(batch: BatchResult) -> str:
     writer = csv.writer(buf)
     writer.writerow([
         "company_url", "company_name", "domain",
-        "email", "founder", "status", "mx_host", "smtp_code", "latency_ms", "error",
+        "email", "founder", "status", "rank", "confidence", "mx_host", "smtp_code", "latency_ms", "error",
     ])
     for cr in batch.company_results:
         company_name = cr.company.company_name if cr.company else ""
@@ -257,11 +270,11 @@ def format_batch_csv(batch: BatchResult) -> str:
                 writer.writerow([
                     cr.url, company_name, domain,
                     r.email, r.founder_name, r.status.value,
-                    r.mx_host or "", r.smtp_code or "", r.latency_ms, "",
+                    r.rank, r.confidence, r.mx_host or "", r.smtp_code or "", r.latency_ms, "",
                 ])
         else:
             writer.writerow([
                 cr.url, company_name, domain,
-                "", "", "", "", "", "", cr.error or "",
+                "", "", "", "", "", "", "", "", cr.error or "",
             ])
     return buf.getvalue().rstrip("\r\n")

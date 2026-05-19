@@ -2,7 +2,7 @@ from email_me.models import Founder
 from email_me.utils import normalize_name
 
 
-def generate_permutations(founder: Founder, domain: str) -> list[str]:
+def generate_permutations(founder: Founder, domain: str) -> list[tuple[str, int]]:
     f = normalize_name(founder.first_name)
     l = normalize_name(founder.last_name)
 
@@ -13,7 +13,7 @@ def generate_permutations(founder: Founder, domain: str) -> list[str]:
         fi = f[0] if f else ""
         if fi and fi != f:
             result.append(f"{fi}@{domain}")
-        return result
+        return [(email, rank) for rank, email in enumerate(result, start=1)]
 
     fi = f[0] if f else ""
     li = l[0] if l else ""
@@ -56,4 +56,4 @@ def generate_permutations(founder: Founder, domain: str) -> list[str]:
         add_patterns(patterns_for(l_compact, l_compact[0] if l_compact else ""))
         add_patterns(patterns_for(l_token, l_token[0] if l_token else ""))
 
-    return result
+    return [(email, rank) for rank, email in enumerate(result, start=1)]

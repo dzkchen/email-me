@@ -324,6 +324,114 @@ def test_cli_workers_rejects_below_1(mocker, tmp_path):
     assert exc.value.code == 3
 
 
+# ---------------------------------------------------------------------------
+# Ctrl+C / interrupt handling
+# ---------------------------------------------------------------------------
+
+def test_interrupt_handler_first_press_sets_event(capsys):
+    from email_me.batch import _InterruptHandler
+
+    h = _InterruptHandler()
+    assert not h.event.is_set()
+    h._handle(None, None)
+    assert h.event.is_set()
+    err = capsys.readouterr().err
+    assert "Interrupt received" in err
+    assert "Ctrl+C again" in err
+
+
+def test_interrupt_handler_second_press_hard_exits(mocker, capsys):
+    from email_me.batch import _InterruptHandler
+
+    mock_exit = mocker.patch("os._exit")
+    h = _InterruptHandler()
+    h._handle(None, None)   # first press
+    h._handle(None, None)   # second press
+    mock_exit.assert_called_once_with(130)
+
+
+def test_batch_parallel_workers_stop_when_event_set(mocker):
+    """Workers should bail out of the master_list loop when stop_event is set."""
+    company = CompanyData(
+        company_name="Stripe",
+        domain="stripe.com",
+        founders=[
+            Founder(first_name="Patrick", last_name="Collison", full_name="Patrick Collison", title="Founder"),
+            Founder(first_name="John", last_name="Collison", full_name="John Collison", title="Founder"),
+        ],
+    )
+    mocker.patch("email_me.batch.scrape_yc_page", return_value=company)
+
+    call_count = {"n": 0}
+
+    def fake_verify(email, mx_cache, **kwargs):
+        call_count["n"] += 1
+        # After 1 probe across all workers, simulate the user pressing Ctrl+C
+        # by reaching into the handler's event via the limiter — actually
+        # simpler: trigger via the patched _InterruptHandler below.
+        return VerificationResult(
+            email=email, founder_name="x",
+            status=VerificationStatus.DOES_NOT_EXIST,
+        )
+
+    mocker.patch("email_me.batch.verify_email", side_effect=fake_verify)
+
+    # Patch the handler so its event starts already set — workers should
+    # short-circuit before doing any probes.
+    from email_me.batch import _InterruptHandler
+
+    class _PreSetHandler(_InterruptHandler):
+        def __init__(self):
+            super().__init__()
+            self.event.set()
+
+    mocker.patch("email_me.batch._InterruptHandler", _PreSetHandler)
+
+    batch = run_batch(
+        urls=[
+            "https://www.ycombinator.com/companies/stripe",
+            "https://www.ycombinator.com/companies/airbnb",
+        ],
+        count=2, delay=0,
+        include_catch_all=True, include_unknown=False,
+        no_smtp=False, stop_on_error=False, verbose=False,
+        workers=2,
+    )
+
+    # All tasks short-circuited before any verify_email call
+    assert call_count["n"] == 0
+    # Each company is recorded as Interrupted
+    assert all(cr.error == "Interrupted" for cr in batch.company_results)
+
+
+def test_batch_parallel_restores_old_sigint_handler_on_clean_exit(mocker):
+    """Graceful path should restore the previous SIGINT handler."""
+    import signal as _signal
+
+    sentinel = _signal.signal(_signal.SIGINT, _signal.SIG_DFL)
+    try:
+        mocker.patch("email_me.batch.scrape_yc_page", return_value=_company())
+        mocker.patch(
+            "email_me.batch.verify_email",
+            return_value=VerificationResult(
+                email="p@stripe.com", founder_name="P",
+                status=VerificationStatus.VERIFIED,
+            ),
+        )
+        run_batch(
+            urls=["https://www.ycombinator.com/companies/stripe"],
+            count=1, delay=0,
+            include_catch_all=True, include_unknown=False,
+            no_smtp=False, stop_on_error=False, verbose=False,
+            workers=2,
+        )
+        # After clean run, handler should be restored to SIG_DFL
+        current = _signal.signal(_signal.SIGINT, sentinel)
+        assert current == _signal.SIG_DFL
+    finally:
+        _signal.signal(_signal.SIGINT, sentinel)
+
+
 def test_cli_workers_default_is_3(mocker, tmp_path):
     f = tmp_path / "urls.txt"
     f.write_text("https://www.ycombinator.com/companies/stripe\n")

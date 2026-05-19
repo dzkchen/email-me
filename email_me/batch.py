@@ -1,7 +1,9 @@
 import csv
 import io
 import json
+import os
 import re
+import signal
 import sys
 import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -44,6 +46,50 @@ def load_urls(path: str) -> list[str]:
     return urls
 
 
+class _InterruptHandler:
+    """Two-press SIGINT handler for batch parallel mode.
+
+    Stays installed for the rest of the process lifetime — first press sets
+    ``event`` so workers drain gracefully; any subsequent press hard-exits via
+    ``os._exit(130)``, bypassing the atexit thread-join that would otherwise
+    block on in-flight SMTP probes.
+    """
+
+    def __init__(self) -> None:
+        self.event = threading.Event()
+        self._fired = False
+
+    def _handle(self, signum, frame) -> None:
+        if not self._fired:
+            self._fired = True
+            try:
+                print(
+                    "\n[INFO] Interrupt received. Finishing in-flight probes...\n"
+                    "[INFO] Press Ctrl+C again to force quit.",
+                    file=sys.stderr,
+                    flush=True,
+                )
+            except Exception:
+                pass
+            self.event.set()
+        else:
+            try:
+                print("\n[INFO] Force quit.", file=sys.stderr, flush=True)
+            except Exception:
+                pass
+            os._exit(130)
+
+    def install(self):
+        """Register as SIGINT handler. Returns the previous handler, or None
+        if not on the main thread (signal.signal() requires main thread)."""
+        if threading.current_thread() is not threading.main_thread():
+            return None
+        try:
+            return signal.signal(signal.SIGINT, self._handle)
+        except (ValueError, OSError):
+            return None
+
+
 def _process_company(
     url: str,
     count: int,
@@ -54,7 +100,10 @@ def _process_company(
     include_unknown: bool,
     no_smtp: bool,
     log: Callable[[str], None],
+    stop_event: threading.Event | None = None,
 ) -> CompanyResult:
+    if stop_event is not None and stop_event.is_set():
+        return CompanyResult(url=url, company=None, results=[], probed_count=0, error="Interrupted")
     try:
         log(f"[INFO] Fetching {url}...")
         company = scrape_yc_page(url)
@@ -99,6 +148,8 @@ def _process_company(
     probed = 0
     for email, rank, founder_name in master_list:
         if len(verified) >= count:
+            break
+        if stop_event is not None and stop_event.is_set():
             break
         result = verify_email(email, mx_cache, rank=rank, delay=delay, rate_limiter=rate_limiter)
         result.founder_name = founder_name
@@ -258,7 +309,16 @@ def _run_batch_parallel(
 ) -> list[CompanyResult]:
     company_results: list[CompanyResult] = []
 
+    interrupt = _InterruptHandler()
+    old_handler = interrupt.install()
+    stop_event = interrupt.event
+
     def task(url: str) -> CompanyResult:
+        if stop_event.is_set():
+            return CompanyResult(
+                url=url, company=None, results=[], probed_count=0,
+                error="Interrupted",
+            )
         log = _make_logger(verbose, stderr_lock, prefix=f"[{_slug_for(url)}] ")
         try:
             return _process_company(
@@ -271,6 +331,7 @@ def _run_batch_parallel(
                 include_unknown=include_unknown,
                 no_smtp=no_smtp,
                 log=log,
+                stop_event=stop_event,
             )
         except requests.exceptions.ConnectionError:
             return CompanyResult(
@@ -282,15 +343,27 @@ def _run_batch_parallel(
                 url=url, company=None, results=[], probed_count=0, error=str(e)
             )
 
-    with ThreadPoolExecutor(max_workers=workers) as executor:
+    executor = ThreadPoolExecutor(max_workers=workers)
+    try:
         futures = {executor.submit(task, url): url for url in urls}
         for future in as_completed(futures):
+            if stop_event.is_set():
+                break
             result = future.result()
             company_results.append(result)
             if stop_on_error and result.error:
                 for f in futures:
                     f.cancel()
                 break
+    finally:
+        executor.shutdown(wait=False, cancel_futures=True)
+        # Keep our handler installed on the interrupt path so a later Ctrl+C
+        # (during atexit thread-join or output formatting) still hard-exits.
+        if old_handler is not None and not stop_event.is_set():
+            try:
+                signal.signal(signal.SIGINT, old_handler)
+            except (ValueError, OSError):
+                pass
 
     return company_results
 

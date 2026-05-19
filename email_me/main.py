@@ -16,6 +16,7 @@ from email_me.models import (
     VerificationResult,
     VerificationStatus,
 )
+from email_me.concurrency import RateLimiter
 from email_me.permutations import generate_permutations
 from email_me.scraper import scrape_yc_page
 from email_me.verifier import verify_email
@@ -54,6 +55,10 @@ def build_parser() -> argparse.ArgumentParser:
     batch.add_argument("--verbose", action="store_true")
     batch.add_argument("--no-smtp", action="store_true")
     batch.add_argument("--stop-on-error", action="store_true")
+    batch.add_argument(
+        "--workers", type=int, default=3, metavar="N",
+        help="Number of parallel workers for batch processing (1-10, default: 3).",
+    )
 
     return parser
 
@@ -114,6 +119,7 @@ def run(args: argparse.Namespace) -> tuple[CompanyData, list[VerificationResult]
         return company, results, len(master_list)
 
     mx_cache: dict = {}
+    rate_limiter = RateLimiter(args.delay)
     verified: list[VerificationResult] = []
     probed = 0
 
@@ -126,7 +132,7 @@ def run(args: argparse.Namespace) -> tuple[CompanyData, list[VerificationResult]
     for email, rank, founder_name in master_list:
         if len(verified) >= args.count:
             break
-        result = verify_email(email, mx_cache, rank=rank, delay=args.delay)
+        result = verify_email(email, mx_cache, rank=rank, delay=args.delay, rate_limiter=rate_limiter)
         result.founder_name = founder_name
         probed += 1
         code_str = str(result.smtp_code) if result.smtp_code is not None else "-"
@@ -223,6 +229,10 @@ def _run_batch_command(args: argparse.Namespace) -> None:
         print("Error: count must be between 1 and 20", file=sys.stderr)
         sys.exit(3)
 
+    if not (1 <= args.workers <= 10):
+        print("Error: --workers must be between 1 and 10", file=sys.stderr)
+        sys.exit(3)
+
     try:
         urls = load_urls(args.file)
     except FileNotFoundError:
@@ -243,6 +253,7 @@ def _run_batch_command(args: argparse.Namespace) -> None:
             no_smtp=args.no_smtp,
             stop_on_error=args.stop_on_error,
             verbose=args.verbose,
+            workers=args.workers,
         )
     except requests.exceptions.ConnectionError:
         print("Error: Network appears down — aborting batch", file=sys.stderr)

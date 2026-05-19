@@ -83,6 +83,7 @@ Batch-only flags:
 |------|---------|-------------|
 | `--count` | `4` | Emails to find per company (1–20) |
 | `--stop-on-error` | off | Halt the entire batch on first company failure |
+| `--workers` | `3` | Parallel workers for batch processing (1–10). `1` is serial. With `>1`, results arrive in completion order, not input order, and verbose lines are prefixed with the company slug. |
 
 ### Exit Codes
 

@@ -3,11 +3,15 @@ import io
 import json
 import re
 import sys
+import threading
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
 from itertools import zip_longest
+from typing import Callable
 
 import requests
 
+from email_me.concurrency import RateLimiter, ThreadSafeMXCache
 from email_me.models import (
     BatchResult,
     CompanyNotFoundError,
@@ -43,15 +47,14 @@ def load_urls(path: str) -> list[str]:
 def _process_company(
     url: str,
     count: int,
-    mx_cache: dict,
+    mx_cache,
+    rate_limiter: RateLimiter,
     delay: float,
     include_catch_all: bool,
     include_unknown: bool,
     no_smtp: bool,
-    verbose: bool,
+    log: Callable[[str], None],
 ) -> CompanyResult:
-    log = (lambda msg: print(msg, file=sys.stderr)) if verbose else (lambda _: None)
-
     try:
         log(f"[INFO] Fetching {url}...")
         company = scrape_yc_page(url)
@@ -97,7 +100,7 @@ def _process_company(
     for email, rank, founder_name in master_list:
         if len(verified) >= count:
             break
-        result = verify_email(email, mx_cache, rank=rank, delay=delay)
+        result = verify_email(email, mx_cache, rank=rank, delay=delay, rate_limiter=rate_limiter)
         result.founder_name = founder_name
         probed += 1
         code_str = str(result.smtp_code) if result.smtp_code is not None else "-"
@@ -109,6 +112,25 @@ def _process_company(
     return CompanyResult(url=url, company=company, results=verified, probed_count=probed, error=None)
 
 
+def _slug_for(url: str) -> str:
+    return url.rstrip("/").rsplit("/", 1)[-1]
+
+
+def _make_logger(
+    verbose: bool,
+    stderr_lock: threading.Lock,
+    prefix: str = "",
+) -> Callable[[str], None]:
+    if not verbose:
+        return lambda _: None
+
+    def log(msg: str) -> None:
+        with stderr_lock:
+            print(f"{prefix}{msg}", file=sys.stderr)
+
+    return log
+
+
 def run_batch(
     urls: list[str],
     count: int,
@@ -118,11 +140,67 @@ def run_batch(
     no_smtp: bool,
     stop_on_error: bool,
     verbose: bool,
+    workers: int = 1,
 ) -> BatchResult:
-    mx_cache: dict = {}
+    mx_cache = ThreadSafeMXCache()
+    rate_limiter = RateLimiter(delay)
+    stderr_lock = threading.Lock()
+
+    if workers <= 1:
+        company_results = _run_batch_serial(
+            urls=urls,
+            count=count,
+            mx_cache=mx_cache,
+            rate_limiter=rate_limiter,
+            delay=delay,
+            include_catch_all=include_catch_all,
+            include_unknown=include_unknown,
+            no_smtp=no_smtp,
+            stop_on_error=stop_on_error,
+            verbose=verbose,
+            stderr_lock=stderr_lock,
+        )
+    else:
+        company_results = _run_batch_parallel(
+            urls=urls,
+            count=count,
+            mx_cache=mx_cache,
+            rate_limiter=rate_limiter,
+            delay=delay,
+            include_catch_all=include_catch_all,
+            include_unknown=include_unknown,
+            no_smtp=no_smtp,
+            stop_on_error=stop_on_error,
+            verbose=verbose,
+            workers=workers,
+            stderr_lock=stderr_lock,
+        )
+
+    timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    return BatchResult(
+        company_results=company_results,
+        requested_count=count,
+        timestamp=timestamp,
+    )
+
+
+def _run_batch_serial(
+    *,
+    urls: list[str],
+    count: int,
+    mx_cache,
+    rate_limiter: RateLimiter,
+    delay: float,
+    include_catch_all: bool,
+    include_unknown: bool,
+    no_smtp: bool,
+    stop_on_error: bool,
+    verbose: bool,
+    stderr_lock: threading.Lock,
+) -> list[CompanyResult]:
     company_results: list[CompanyResult] = []
     consecutive_connection_errors = 0
-    log = (lambda msg: print(msg, file=sys.stderr)) if verbose else (lambda _: None)
+    log = _make_logger(verbose, stderr_lock)
 
     for i, url in enumerate(urls, 1):
         log(f"\n[INFO] [{i}/{len(urls)}] Processing {url}")
@@ -131,11 +209,12 @@ def run_batch(
                 url=url,
                 count=count,
                 mx_cache=mx_cache,
+                rate_limiter=rate_limiter,
                 delay=delay,
                 include_catch_all=include_catch_all,
                 include_unknown=include_unknown,
                 no_smtp=no_smtp,
-                verbose=verbose,
+                log=log,
             )
             consecutive_connection_errors = 0
             company_results.append(result)
@@ -159,12 +238,61 @@ def run_batch(
             if stop_on_error:
                 break
 
-    timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-    return BatchResult(
-        company_results=company_results,
-        requested_count=count,
-        timestamp=timestamp,
-    )
+    return company_results
+
+
+def _run_batch_parallel(
+    *,
+    urls: list[str],
+    count: int,
+    mx_cache,
+    rate_limiter: RateLimiter,
+    delay: float,
+    include_catch_all: bool,
+    include_unknown: bool,
+    no_smtp: bool,
+    stop_on_error: bool,
+    verbose: bool,
+    workers: int,
+    stderr_lock: threading.Lock,
+) -> list[CompanyResult]:
+    company_results: list[CompanyResult] = []
+
+    def task(url: str) -> CompanyResult:
+        log = _make_logger(verbose, stderr_lock, prefix=f"[{_slug_for(url)}] ")
+        try:
+            return _process_company(
+                url=url,
+                count=count,
+                mx_cache=mx_cache,
+                rate_limiter=rate_limiter,
+                delay=delay,
+                include_catch_all=include_catch_all,
+                include_unknown=include_unknown,
+                no_smtp=no_smtp,
+                log=log,
+            )
+        except requests.exceptions.ConnectionError:
+            return CompanyResult(
+                url=url, company=None, results=[], probed_count=0,
+                error="Network connection failed",
+            )
+        except Exception as e:
+            return CompanyResult(
+                url=url, company=None, results=[], probed_count=0, error=str(e)
+            )
+
+    with ThreadPoolExecutor(max_workers=workers) as executor:
+        futures = {executor.submit(task, url): url for url in urls}
+        for future in as_completed(futures):
+            result = future.result()
+            company_results.append(result)
+            if stop_on_error and result.error:
+                for f in futures:
+                    f.cancel()
+                break
+
+    return company_results
 
 
 def format_batch_table(batch: BatchResult) -> str:

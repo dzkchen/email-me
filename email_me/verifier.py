@@ -3,18 +3,20 @@ import secrets
 import smtplib
 import socket
 import sys
+import threading
 import time
-from typing import TypedDict
+from typing import Optional, TypedDict
 
 import dns.exception
 import dns.resolver
 
+from email_me.concurrency import RateLimiter
 from email_me.models import VerificationResult, VerificationStatus
 
 EMAIL_RE = re.compile(r'^[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}$')
 
-_last_probe_time: dict[str, float] = {}
-_warned_hosts: set[str] = {}
+_warned_hosts: set[str] = set()
+_warn_lock = threading.Lock()
 
 _RANK_SCORES = {1: 60, 2: 55, 3: 50, 4: 45, 5: 40, 6: 35, 7: 32, 8: 28, 9: 24, 10: 20, 11: 15, 12: 10}
 _STATUS_MODIFIERS = {
@@ -73,19 +75,30 @@ def _smtp_probe(email: str, mx_host: str, timeout: int = 10) -> VerificationResu
         except (smtplib.SMTPException, socket.timeout, socket.gaierror, OSError):
             return _result(VerificationStatus.UNKNOWN)
 
-    if ports_refused == 2 and mx_host not in _warned_hosts:
-        _warned_hosts.add(mx_host)
-        print(
-            "[WARN] Could not connect to MX server on ports 25 or 587.\n"
-            "       This is common on residential ISPs and cloud providers.\n"
-            "       For best results, run from a VPS with unrestricted outbound port 25.",
-            file=sys.stderr,
-        )
+    if ports_refused == 2:
+        with _warn_lock:
+            if mx_host not in _warned_hosts:
+                _warned_hosts.add(mx_host)
+                print(
+                    "[WARN] Could not connect to MX server on ports 25 or 587.\n"
+                    "       This is common on residential ISPs and cloud providers.\n"
+                    "       For best results, run from a VPS with unrestricted outbound port 25.",
+                    file=sys.stderr,
+                )
 
     return _result(VerificationStatus.UNKNOWN)
 
 
-def verify_email(email: str, mx_cache: dict[str, _MXEntry], rank: int = 0, delay: float = 1.0) -> VerificationResult:
+def verify_email(
+    email: str,
+    mx_cache,
+    rank: int = 0,
+    delay: float = 1.0,
+    rate_limiter: Optional[RateLimiter] = None,
+) -> VerificationResult:
+    if rate_limiter is None:
+        rate_limiter = RateLimiter(delay)
+
     def _finalize(result: VerificationResult) -> VerificationResult:
         result.rank = rank
         result.confidence = _compute_confidence(rank, result.status)
@@ -118,10 +131,10 @@ def verify_email(email: str, mx_cache: dict[str, _MXEntry], rank: int = 0, delay
 
     if entry["catch_all"] is None:
         probe_addr = f"email-me-probe-{secrets.token_hex(8)}@{domain}"
-        _rate_limit(mx_host, delay)
+        rate_limiter.wait(mx_host)
         probe_result = _smtp_probe(probe_addr, mx_host)
-        _last_probe_time[mx_host] = time.monotonic()
         entry["catch_all"] = probe_result.smtp_code == 250
+        mx_cache[domain] = entry
 
     if entry["catch_all"]:
         return _finalize(VerificationResult(
@@ -132,15 +145,6 @@ def verify_email(email: str, mx_cache: dict[str, _MXEntry], rank: int = 0, delay
             catch_all_domain=True,
         ))
 
-    _rate_limit(mx_host, delay)
+    rate_limiter.wait(mx_host)
     result = _smtp_probe(email, mx_host)
-    _last_probe_time[mx_host] = time.monotonic()
     return _finalize(result)
-
-
-def _rate_limit(mx_host: str, delay: float) -> None:
-    last = _last_probe_time.get(mx_host)
-    if last is not None:
-        remaining = delay - (time.monotonic() - last)
-        if remaining > 0:
-            time.sleep(remaining)

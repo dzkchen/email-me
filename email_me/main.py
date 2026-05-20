@@ -18,10 +18,21 @@ from email_me.models import (
 )
 from email_me.concurrency import RateLimiter
 from email_me.permutations import generate_permutations
-from email_me.scraper import scrape_yc_page
+from email_me.scraper import scrape_yc_page, direct_input_to_company_data
 from email_me.verifier import verify_email
 
 YC_URL_RE = re.compile(r'^https?://www\.ycombinator\.com/companies/[a-zA-Z0-9\-_]+$')
+
+
+def _add_shared_options(p: argparse.ArgumentParser) -> None:
+    p.add_argument("--format", choices=["table", "json", "csv"], default="table")
+    p.add_argument("--timeout", type=int, default=10)
+    p.add_argument("--delay", type=float, default=1.0)
+    p.add_argument("--include-catch-all", action="store_true", default=True)
+    p.add_argument("--no-catch-all", dest="include_catch_all", action="store_false")
+    p.add_argument("--include-unknown", action="store_true")
+    p.add_argument("--verbose", action="store_true")
+    p.add_argument("--no-smtp", action="store_true")
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -34,26 +45,20 @@ def build_parser() -> argparse.ArgumentParser:
     single = subparsers.add_parser("single", help="Process one YC company URL")
     single.add_argument("yc_url", help="YC company page URL")
     single.add_argument("count", type=int, nargs="?", default=2, help="Number of verified emails to find (1-20, default: 2)")
-    single.add_argument("--format", choices=["table", "json", "csv"], default="table")
-    single.add_argument("--timeout", type=int, default=10)
-    single.add_argument("--delay", type=float, default=1.0)
-    single.add_argument("--include-catch-all", action="store_true", default=True)
-    single.add_argument("--no-catch-all", dest="include_catch_all", action="store_false")
-    single.add_argument("--include-unknown", action="store_true")
-    single.add_argument("--verbose", action="store_true")
-    single.add_argument("--no-smtp", action="store_true")
+    _add_shared_options(single)
+
+    direct = subparsers.add_parser("direct", help="Find emails for a non-YC company")
+    direct.add_argument("website_url", help="Any URL on the company's domain")
+    direct.add_argument("founders", nargs="+", metavar="founder_name",
+                        help="Founder full name(s) in quotes")
+    direct.add_argument("count", type=int, nargs="?", default=2,
+                        help="Number of verified emails to find (1-20, default: 2)")
+    _add_shared_options(direct)
 
     batch = subparsers.add_parser("batch", help="Process a file of YC company URLs")
     batch.add_argument("file", help="Path to text file with one YC URL per line")
     batch.add_argument("--count", type=int, default=4, help="Emails to find per company (1-20, default: 4)")
-    batch.add_argument("--format", choices=["table", "json", "csv"], default="table")
-    batch.add_argument("--timeout", type=int, default=10)
-    batch.add_argument("--delay", type=float, default=1.0)
-    batch.add_argument("--include-catch-all", action="store_true", default=True)
-    batch.add_argument("--no-catch-all", dest="include_catch_all", action="store_false")
-    batch.add_argument("--include-unknown", action="store_true")
-    batch.add_argument("--verbose", action="store_true")
-    batch.add_argument("--no-smtp", action="store_true")
+    _add_shared_options(batch)
     batch.add_argument("--stop-on-error", action="store_true")
     batch.add_argument(
         "--workers", type=int, default=3, metavar="N",
@@ -75,21 +80,11 @@ def validate_args(args: argparse.Namespace) -> None:
         sys.exit(3)
 
 
-def run(args: argparse.Namespace) -> tuple[CompanyData, list[VerificationResult], int]:
+def _run_pipeline(
+    company: CompanyData,
+    args: argparse.Namespace,
+) -> tuple[CompanyData, list[VerificationResult], int]:
     log = (lambda msg: print(msg, file=sys.stderr)) if args.verbose else (lambda _: None)
-
-    log(f"[INFO] Fetching {args.yc_url}...")
-    try:
-        company = scrape_yc_page(args.yc_url)
-    except requests.exceptions.ConnectionError:
-        print("Error: Could not reach ycombinator.com — check your network connection", file=sys.stderr)
-        sys.exit(1)
-    except CompanyNotFoundError as e:
-        print(f"Error: {e}", file=sys.stderr)
-        sys.exit(1)
-    except ScrapingError as e:
-        print(f"Error: {e}", file=sys.stderr)
-        sys.exit(1)
 
     log(f"[INFO] Found {len(company.founders)} founders: {', '.join(f.full_name for f in company.founders)}")
     log(f"[INFO] Domain: {company.domain}")
@@ -142,6 +137,38 @@ def run(args: argparse.Namespace) -> tuple[CompanyData, list[VerificationResult]
 
     verified.sort(key=lambda r: r.confidence, reverse=True)
     return company, verified, probed
+
+
+def run(args: argparse.Namespace) -> tuple[CompanyData, list[VerificationResult], int]:
+    log = (lambda msg: print(msg, file=sys.stderr)) if args.verbose else (lambda _: None)
+
+    log(f"[INFO] Fetching {args.yc_url}...")
+    try:
+        company = scrape_yc_page(args.yc_url)
+    except requests.exceptions.ConnectionError:
+        print("Error: Could not reach ycombinator.com — check your network connection", file=sys.stderr)
+        sys.exit(1)
+    except CompanyNotFoundError as e:
+        print(f"Error: {e}", file=sys.stderr)
+        sys.exit(1)
+    except ScrapingError as e:
+        print(f"Error: {e}", file=sys.stderr)
+        sys.exit(1)
+
+    return _run_pipeline(company, args)
+
+
+def run_direct(args: argparse.Namespace) -> tuple[CompanyData, list[VerificationResult], int]:
+    log = (lambda msg: print(msg, file=sys.stderr)) if args.verbose else (lambda _: None)
+
+    try:
+        company = direct_input_to_company_data(args.website_url, args.founders)
+    except ScrapingError as e:
+        print(f"Error: {e}", file=sys.stderr)
+        sys.exit(1)
+
+    log(f"[INFO] Using direct input for {company.domain}")
+    return _run_pipeline(company, args)
 
 
 def format_table(company: CompanyData, results: list[VerificationResult], probed: int) -> str:
@@ -285,6 +312,31 @@ def cli() -> None:
     if args.command == "single":
         validate_args(args)
         company, results, probed = run(args)
+
+        if args.format == "table":
+            print(format_table(company, results, probed))
+        elif args.format == "json":
+            print(format_json(company, results, probed, args.count))
+        elif args.format == "csv":
+            print(format_csv(results))
+
+        if not results:
+            print(
+                f"No verified email addresses found after probing {probed} permutations.",
+                file=sys.stderr,
+            )
+        sys.exit(0 if results else 2)
+
+    elif args.command == "direct":
+        # argparse can't split a trailing positional `count` from a preceding
+        # nargs="+" `founders` list, so peel a trailing integer token here.
+        if len(args.founders) > 1 and args.founders[-1].isdigit():
+            args.count = int(args.founders[-1])
+            args.founders = args.founders[:-1]
+        if not (1 <= args.count <= 20):
+            print("Error: count must be between 1 and 20", file=sys.stderr)
+            sys.exit(3)
+        company, results, probed = run_direct(args)
 
         if args.format == "table":
             print(format_table(company, results, probed))

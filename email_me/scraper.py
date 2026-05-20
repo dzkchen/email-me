@@ -144,3 +144,26 @@ def scrape_yc_page(url: str) -> CompanyData:
         raise ScrapingError("Could not determine company domain")
 
     return CompanyData(company_name=company_name, domain=domain, founders=founders)
+
+
+def direct_input_to_company_data(
+    website_url: str,
+    founder_names: list[str],
+) -> CompanyData:
+    domain = _derive_domain(website_url)
+
+    cleaned = [n.strip() for n in founder_names if n and n.strip()]
+    if not cleaned:
+        raise ScrapingError("No valid founder names provided")
+
+    founders: list[Founder] = []
+    for name in cleaned:
+        first_name, last_name = _split_name(name)
+        founders.append(Founder(
+            first_name=first_name,
+            last_name=last_name,
+            full_name=name,
+            title="",
+        ))
+
+    return CompanyData(company_name=domain, domain=domain, founders=founders)

@@ -2,7 +2,7 @@ import pytest
 import requests
 import responses as responses_lib
 
-from email_me.scraper import scrape_yc_page, _derive_domain
+from email_me.scraper import scrape_yc_page, _derive_domain, direct_input_to_company_data
 from email_me.models import CompanyNotFoundError, ScrapingError
 
 STRIPE_HTML = """
@@ -161,6 +161,57 @@ def test_founder_full_name_and_title():
     data = scrape_yc_page("https://www.ycombinator.com/companies/stripe")
     assert data.founders[0].full_name == "Patrick Collison"
     assert "Founder" in data.founders[0].title
+
+
+def test_direct_input_single_founder():
+    data = direct_input_to_company_data("https://stripe.com", ["Patrick Collison"])
+    assert data.domain == "stripe.com"
+    assert data.company_name == "stripe.com"
+    assert len(data.founders) == 1
+    assert data.founders[0].first_name == "Patrick"
+    assert data.founders[0].last_name == "Collison"
+    assert data.founders[0].full_name == "Patrick Collison"
+    assert data.founders[0].title == ""
+
+
+def test_direct_input_multiple_founders_preserves_order():
+    data = direct_input_to_company_data(
+        "https://stripe.com",
+        ["Patrick Collison", "John Collison"],
+    )
+    assert [f.full_name for f in data.founders] == ["Patrick Collison", "John Collison"]
+
+
+def test_direct_input_deep_path_url():
+    data = direct_input_to_company_data("https://stripe.com/blog/founders", ["Alice Smith"])
+    assert data.domain == "stripe.com"
+
+
+def test_direct_input_malformed_url_raises():
+    with pytest.raises(ScrapingError, match="Could not determine root domain"):
+        direct_input_to_company_data("https://localhost", ["Alice Smith"])
+
+
+def test_direct_input_empty_list_raises():
+    with pytest.raises(ScrapingError, match="No valid founder names provided"):
+        direct_input_to_company_data("https://stripe.com", [])
+
+
+def test_direct_input_whitespace_only_names_raise():
+    with pytest.raises(ScrapingError, match="No valid founder names provided"):
+        direct_input_to_company_data("https://stripe.com", ["   ", ""])
+
+
+def test_direct_input_single_token_name():
+    data = direct_input_to_company_data("https://example.com", ["Cher"])
+    assert data.founders[0].first_name == "Cher"
+    assert data.founders[0].last_name == "Cher"
+
+
+def test_direct_input_company_name_equals_domain():
+    data = direct_input_to_company_data("https://notion.so/about", ["Ivan Zhao"])
+    assert data.company_name == "notion.so"
+    assert data.domain == "notion.so"
 
 
 @responses_lib.activate

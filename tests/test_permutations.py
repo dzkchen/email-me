@@ -20,7 +20,7 @@ def test_standard_founder():
     assert emails[1] == "patrick.collison@stripe.com"
     assert emails[2] == "p.collison@stripe.com"
     assert "collison@stripe.com" in emails
-    assert len(result) == 12
+    assert len(result) >= 12
 
 
 def test_permutations_return_tuples():
@@ -88,3 +88,26 @@ def test_compound_no_duplicates():
     result = generate_permutations(founder, "example.com")
     emails = _emails(result)
     assert len(emails) == len(set(emails))
+
+
+def test_nickname_expansion():
+    founder = Founder("Christopher", "Smith", "Christopher Smith", "Founder")
+    result = generate_permutations(founder, "example.com")
+    emails = _emails(result)
+    # Canonical full-name patterns rank first.
+    assert emails[0] == "christopher@example.com"
+    assert "christopher.smith@example.com" in emails
+    # Nickname variants are also generated, but after the canonical set.
+    assert "chris@example.com" in emails
+    assert "chris.smith@example.com" in emails
+    assert emails.index("christopher@example.com") < emails.index("chris@example.com")
+
+
+def test_nickname_no_duplicates_when_first_name_matches_nickname():
+    founder = Founder("Chris", "Smith", "Chris Smith", "Founder")
+    result = generate_permutations(founder, "example.com")
+    emails = _emails(result)
+    # "chris" isn't a key in the nickname map, so no expansion happens —
+    # just the standard 12 patterns, no dupes.
+    assert len(emails) == len(set(emails))
+    assert "chris@example.com" in emails

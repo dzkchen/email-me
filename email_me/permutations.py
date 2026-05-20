@@ -1,11 +1,60 @@
 from email_me.models import Founder
 from email_me.utils import normalize_name
 
+_NICKNAMES: dict[str, list[str]] = {
+    "alexander": ["alex", "xander"],
+    "alexandra": ["alex", "allie", "sasha"],
+    "andrew": ["andy", "drew"],
+    "anthony": ["tony"],
+    "benjamin": ["ben"],
+    "catherine": ["cat", "cathy", "kate", "katie"],
+    "charles": ["charlie", "chuck"],
+    "christine": ["chris", "christie", "tina"],
+    "christina": ["chris", "christie", "tina"],
+    "christopher": ["chris"],
+    "daniel": ["dan", "danny"],
+    "david": ["dave"],
+    "deborah": ["deb", "debbie"],
+    "donald": ["don"],
+    "edward": ["ed", "eddie", "ted"],
+    "elizabeth": ["beth", "eliza", "liz", "lizzie"],
+    "frederick": ["fred"],
+    "gregory": ["greg"],
+    "jacob": ["jake"],
+    "james": ["jim", "jamie"],
+    "jennifer": ["jen", "jenny"],
+    "jessica": ["jess"],
+    "jonathan": ["jon", "jonny"],
+    "joseph": ["joe", "joey"],
+    "joshua": ["josh"],
+    "katherine": ["kate", "katie", "kathy"],
+    "kenneth": ["ken"],
+    "margaret": ["maggie", "meg", "peggy"],
+    "matthew": ["matt"],
+    "michael": ["mike"],
+    "nicholas": ["nick"],
+    "patricia": ["pat", "patty", "tricia"],
+    "patrick": ["pat"],
+    "rebecca": ["becca", "becky"],
+    "richard": ["rich", "rick", "dick"],
+    "robert": ["rob", "bob"],
+    "ronald": ["ron"],
+    "samuel": ["sam"],
+    "stephanie": ["steph"],
+    "stephen": ["steve"],
+    "steven": ["steve"],
+    "susan": ["sue"],
+    "theodore": ["theo", "ted"],
+    "thomas": ["tom"],
+    "timothy": ["tim"],
+    "victoria": ["vicky", "tori"],
+    "vincent": ["vince"],
+    "william": ["will", "bill", "billy"],
+    "zachary": ["zach"],
+}
 
-def generate_permutations(founder: Founder, domain: str) -> list[tuple[str, int]]:
-    f = normalize_name(founder.first_name)
-    l = normalize_name(founder.last_name)
 
+def _patterns_for_first(f: str, l: str, domain: str) -> list[str]:
     if not l or l == f:
         result = []
         if f:
@@ -13,7 +62,7 @@ def generate_permutations(founder: Founder, domain: str) -> list[tuple[str, int]
         fi = f[0] if f else ""
         if fi and fi != f:
             result.append(f"{fi}@{domain}")
-        return [(email, rank) for rank, email in enumerate(result, start=1)]
+        return result
 
     fi = f[0] if f else ""
     li = l[0] if l else ""
@@ -56,4 +105,25 @@ def generate_permutations(founder: Founder, domain: str) -> list[tuple[str, int]
         add_patterns(patterns_for(l_compact, l_compact[0] if l_compact else ""))
         add_patterns(patterns_for(l_token, l_token[0] if l_token else ""))
 
-    return [(email, rank) for rank, email in enumerate(result, start=1)]
+    return result
+
+
+def generate_permutations(founder: Founder, domain: str) -> list[tuple[str, int]]:
+    f = normalize_name(founder.first_name)
+    l = normalize_name(founder.last_name)
+
+    first_variants = [f]
+    for nick in _NICKNAMES.get(f, []):
+        nick_norm = normalize_name(nick)
+        if nick_norm and nick_norm not in first_variants:
+            first_variants.append(nick_norm)
+
+    seen: set[str] = set()
+    ordered: list[str] = []
+    for variant in first_variants:
+        for email in _patterns_for_first(variant, l, domain):
+            if email not in seen:
+                seen.add(email)
+                ordered.append(email)
+
+    return [(email, rank) for rank, email in enumerate(ordered, start=1)]

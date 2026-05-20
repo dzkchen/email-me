@@ -54,6 +54,26 @@ _NICKNAMES: dict[str, list[str]] = {
 }
 
 
+def _build_variants_map(nicknames: dict[str, list[str]]) -> dict[str, list[str]]:
+    variants: dict[str, list[str]] = {}
+
+    def _add(key: str, value: str) -> None:
+        if key == value:
+            return
+        bucket = variants.setdefault(key, [])
+        if value not in bucket:
+            bucket.append(value)
+
+    for canonical, nicks in nicknames.items():
+        for nick in nicks:
+            _add(canonical, nick)
+            _add(nick, canonical)
+    return variants
+
+
+_VARIANTS = _build_variants_map(_NICKNAMES)
+
+
 def _patterns_for_first(f: str, l: str, domain: str) -> list[str]:
     if not l or l == f:
         result = []
@@ -113,10 +133,9 @@ def generate_permutations(founder: Founder, domain: str) -> list[tuple[str, int]
     l = normalize_name(founder.last_name)
 
     first_variants = [f]
-    for nick in _NICKNAMES.get(f, []):
-        nick_norm = normalize_name(nick)
-        if nick_norm and nick_norm not in first_variants:
-            first_variants.append(nick_norm)
+    for variant in _VARIANTS.get(f, []):
+        if variant and variant not in first_variants:
+            first_variants.append(variant)
 
     seen: set[str] = set()
     ordered: list[str] = []

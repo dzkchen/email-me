@@ -103,11 +103,23 @@ def test_nickname_expansion():
     assert emails.index("christopher@example.com") < emails.index("chris@example.com")
 
 
-def test_nickname_no_duplicates_when_first_name_matches_nickname():
+def test_nickname_bidirectional_expansion():
     founder = Founder("Chris", "Smith", "Chris Smith", "Founder")
     result = generate_permutations(founder, "example.com")
     emails = _emails(result)
-    # "chris" isn't a key in the nickname map, so no expansion happens —
-    # just the standard 12 patterns, no dupes.
+    # Short form first (canonical for this founder), then long forms.
+    assert emails[0] == "chris@example.com"
+    assert "christopher@example.com" in emails
+    assert "christine@example.com" in emails
+    assert "christina@example.com" in emails
+    assert emails.index("chris@example.com") < emails.index("christopher@example.com")
     assert len(emails) == len(set(emails))
-    assert "chris@example.com" in emails
+
+
+def test_nickname_shared_short_form_expands_all_canonicals():
+    # "alex" is a nickname for both Alexander and Alexandra — both should appear.
+    founder = Founder("Alex", "Doe", "Alex Doe", "Founder")
+    result = generate_permutations(founder, "example.com")
+    emails = _emails(result)
+    assert "alexander@example.com" in emails
+    assert "alexandra@example.com" in emails

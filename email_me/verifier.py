@@ -10,6 +10,7 @@ from typing import Optional, TypedDict
 import dns.exception
 import dns.resolver
 
+from email_me import colors
 from email_me.concurrency import RateLimiter
 from email_me.models import VerificationResult, VerificationStatus
 
@@ -80,7 +81,8 @@ def _smtp_probe(email: str, mx_host: str, timeout: int = 10) -> VerificationResu
             if mx_host not in _warned_hosts:
                 _warned_hosts.add(mx_host)
                 print(
-                    "[WARN] Could not connect to MX server on ports 25 or 587.\n"
+                    colors.stderr("[WARN]", colors.YELLOW)
+                    + " Could not connect to MX server on ports 25 or 587.\n"
                     "       This is common on residential ISPs and cloud providers.\n"
                     "       For best results, run from a VPS with unrestricted outbound port 25.",
                     file=sys.stderr,

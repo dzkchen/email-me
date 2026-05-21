@@ -16,10 +16,19 @@ from email_me.models import (
     VerificationResult,
     VerificationStatus,
 )
+from email_me import colors
 from email_me.concurrency import RateLimiter
 from email_me.permutations import generate_permutations
 from email_me.scraper import scrape_yc_page, direct_input_to_company_data
 from email_me.verifier import verify_email
+
+
+def _err(msg: str) -> str:
+    return colors.stderr(msg, colors.RED)
+
+
+def _stderr_log(msg: str) -> None:
+    print(colors.colorize_log_line(msg), file=sys.stderr)
 
 YC_URL_RE = re.compile(r'^https?://www\.ycombinator\.com/companies/[a-zA-Z0-9\-_]+$')
 
@@ -71,12 +80,12 @@ def build_parser() -> argparse.ArgumentParser:
 def validate_args(args: argparse.Namespace) -> None:
     if not YC_URL_RE.match(args.yc_url):
         print(
-            "Error: Invalid URL. Must match https://www.ycombinator.com/companies/<slug>",
+            _err("Error: Invalid URL. Must match https://www.ycombinator.com/companies/<slug>"),
             file=sys.stderr,
         )
         sys.exit(3)
     if not (1 <= args.count <= 20):
-        print("Error: count must be between 1 and 20", file=sys.stderr)
+        print(_err("Error: count must be between 1 and 20"), file=sys.stderr)
         sys.exit(3)
 
 
@@ -84,7 +93,7 @@ def _run_pipeline(
     company: CompanyData,
     args: argparse.Namespace,
 ) -> tuple[CompanyData, list[VerificationResult], int]:
-    log = (lambda msg: print(msg, file=sys.stderr)) if args.verbose else (lambda _: None)
+    log = _stderr_log if args.verbose else (lambda _: None)
 
     log(f"[INFO] Found {len(company.founders)} founders: {', '.join(f.full_name for f in company.founders)}")
     log(f"[INFO] Domain: {company.domain}")
@@ -140,31 +149,31 @@ def _run_pipeline(
 
 
 def run(args: argparse.Namespace) -> tuple[CompanyData, list[VerificationResult], int]:
-    log = (lambda msg: print(msg, file=sys.stderr)) if args.verbose else (lambda _: None)
+    log = _stderr_log if args.verbose else (lambda _: None)
 
     log(f"[INFO] Fetching {args.yc_url}...")
     try:
         company = scrape_yc_page(args.yc_url)
     except requests.exceptions.ConnectionError:
-        print("Error: Could not reach ycombinator.com — check your network connection", file=sys.stderr)
+        print(_err("Error: Could not reach ycombinator.com — check your network connection"), file=sys.stderr)
         sys.exit(1)
     except CompanyNotFoundError as e:
-        print(f"Error: {e}", file=sys.stderr)
+        print(_err(f"Error: {e}"), file=sys.stderr)
         sys.exit(1)
     except ScrapingError as e:
-        print(f"Error: {e}", file=sys.stderr)
+        print(_err(f"Error: {e}"), file=sys.stderr)
         sys.exit(1)
 
     return _run_pipeline(company, args)
 
 
 def run_direct(args: argparse.Namespace) -> tuple[CompanyData, list[VerificationResult], int]:
-    log = (lambda msg: print(msg, file=sys.stderr)) if args.verbose else (lambda _: None)
+    log = _stderr_log if args.verbose else (lambda _: None)
 
     try:
         company = direct_input_to_company_data(args.website_url, args.founders)
     except ScrapingError as e:
-        print(f"Error: {e}", file=sys.stderr)
+        print(_err(f"Error: {e}"), file=sys.stderr)
         sys.exit(1)
 
     log(f"[INFO] Using direct input for {company.domain}")
@@ -194,9 +203,11 @@ def format_table(company: CompanyData, results: list[VerificationResult], probed
 
     lines = [f"email-me results for {company.domain}", sep, header, row_sep]
     for i, r in enumerate(results, 1):
+        status_cell = f"{r.status.value.upper():<{col_status}}"
+        status_cell = colors.stdout(status_cell, colors.status_code(r.status))
         lines.append(
             f" {i:>2} │ {r.email:<{col_email}} │ {r.founder_name:<{col_founder}}"
-            f" │ {r.status.value.upper():<{col_status}} │ {r.confidence:>{col_conf}}"
+            f" │ {status_cell} │ {r.confidence:>{col_conf}}"
         )
     lines.append(sep)
     lines.append("")
@@ -253,17 +264,17 @@ def _run_batch_command(args: argparse.Namespace) -> None:
     )
 
     if not (1 <= args.count <= 20):
-        print("Error: count must be between 1 and 20", file=sys.stderr)
+        print(_err("Error: count must be between 1 and 20"), file=sys.stderr)
         sys.exit(3)
 
     if not (1 <= args.workers <= 10):
-        print("Error: --workers must be between 1 and 10", file=sys.stderr)
+        print(_err("Error: --workers must be between 1 and 10"), file=sys.stderr)
         sys.exit(3)
 
     try:
         urls = load_urls(args.file)
     except FileNotFoundError:
-        print(f"Error: File not found: {args.file}", file=sys.stderr)
+        print(_err(f"Error: File not found: {args.file}"), file=sys.stderr)
         sys.exit(1)
 
     if not urls:
@@ -283,7 +294,7 @@ def _run_batch_command(args: argparse.Namespace) -> None:
             workers=args.workers,
         )
     except requests.exceptions.ConnectionError:
-        print("Error: Network appears down — aborting batch", file=sys.stderr)
+        print(_err("Error: Network appears down — aborting batch"), file=sys.stderr)
         sys.exit(1)
 
     if args.format == "table":
@@ -298,7 +309,6 @@ def _run_batch_command(args: argparse.Namespace) -> None:
 
 def cli() -> None:
     argv = sys.argv[1:]
-    # Backward compat: if first arg looks like a URL, route to the single subcommand
     if argv and argv[0].startswith("http"):
         argv = ["single"] + argv
 
@@ -322,19 +332,20 @@ def cli() -> None:
 
         if not results:
             print(
-                f"No verified email addresses found after probing {probed} permutations.",
+                colors.stderr(
+                    f"No verified email addresses found after probing {probed} permutations.",
+                    colors.YELLOW,
+                ),
                 file=sys.stderr,
             )
         sys.exit(0 if results else 2)
 
     elif args.command == "direct":
-        # argparse can't split a trailing positional `count` from a preceding
-        # nargs="+" `founders` list, so peel a trailing integer token here.
         if len(args.founders) > 1 and args.founders[-1].isdigit():
             args.count = int(args.founders[-1])
             args.founders = args.founders[:-1]
         if not (1 <= args.count <= 20):
-            print("Error: count must be between 1 and 20", file=sys.stderr)
+            print(_err("Error: count must be between 1 and 20"), file=sys.stderr)
             sys.exit(3)
         company, results, probed = run_direct(args)
 
@@ -347,7 +358,10 @@ def cli() -> None:
 
         if not results:
             print(
-                f"No verified email addresses found after probing {probed} permutations.",
+                colors.stderr(
+                    f"No verified email addresses found after probing {probed} permutations.",
+                    colors.YELLOW,
+                ),
                 file=sys.stderr,
             )
         sys.exit(0 if results else 2)

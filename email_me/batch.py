@@ -13,6 +13,7 @@ from typing import Callable
 
 import requests
 
+from email_me import colors
 from email_me.concurrency import RateLimiter, ThreadSafeMXCache
 from email_me.models import (
     BatchResult,
@@ -30,7 +31,6 @@ YC_URL_RE = re.compile(r'^https?://www\.ycombinator\.com/companies/[a-zA-Z0-9\-_
 
 
 def load_urls(path: str) -> list[str]:
-    """Read validated YC URLs from a text file. Skips blank lines and # comments."""
     with open(path) as f:
         lines = f.readlines()
 
@@ -40,20 +40,16 @@ def load_urls(path: str) -> list[str]:
         if not line or line.startswith("#"):
             continue
         if not YC_URL_RE.match(line):
-            print(f"Warning: line {i} is not a valid YC URL, skipping: {line!r}", file=sys.stderr)
+            print(
+                colors.stderr(f"Warning: line {i} is not a valid YC URL, skipping: {line!r}", colors.YELLOW),
+                file=sys.stderr,
+            )
             continue
         urls.append(line)
     return urls
 
 
 class _InterruptHandler:
-    """Two-press SIGINT handler for batch parallel mode.
-
-    Stays installed for the rest of the process lifetime — first press sets
-    ``event`` so workers drain gracefully; any subsequent press hard-exits via
-    ``os._exit(130)``, bypassing the atexit thread-join that would otherwise
-    block on in-flight SMTP probes.
-    """
 
     def __init__(self) -> None:
         self.event = threading.Event()
@@ -64,8 +60,9 @@ class _InterruptHandler:
             self._fired = True
             try:
                 print(
-                    "\n[INFO] Interrupt received. Finishing in-flight probes...\n"
-                    "[INFO] Press Ctrl+C again to force quit.",
+                    colors.colorize_log_line("\n[INFO] Interrupt received. Finishing in-flight probes...")
+                    + "\n"
+                    + colors.colorize_log_line("[INFO] Press Ctrl+C again to force quit."),
                     file=sys.stderr,
                     flush=True,
                 )
@@ -74,14 +71,12 @@ class _InterruptHandler:
             self.event.set()
         else:
             try:
-                print("\n[INFO] Force quit.", file=sys.stderr, flush=True)
+                print(colors.colorize_log_line("\n[INFO] Force quit."), file=sys.stderr, flush=True)
             except Exception:
                 pass
             os._exit(130)
 
     def install(self):
-        """Register as SIGINT handler. Returns the previous handler, or None
-        if not on the main thread (signal.signal() requires main thread)."""
         if threading.current_thread() is not threading.main_thread():
             return None
         try:
@@ -109,7 +104,6 @@ def _process_company(
         company = scrape_yc_page(url)
     except (CompanyNotFoundError, ScrapingError) as e:
         return CompanyResult(url=url, company=None, results=[], probed_count=0, error=str(e))
-    # ConnectionError deliberately not caught here — bubbles up to run_batch
 
     log(f"[INFO] Found {len(company.founders)} founders: {', '.join(f.full_name for f in company.founders)}")
     log(f"[INFO] Domain: {company.domain}")
@@ -175,9 +169,11 @@ def _make_logger(
     if not verbose:
         return lambda _: None
 
+    colored_prefix = colors.stderr(prefix, colors.DIM) if prefix else ""
+
     def log(msg: str) -> None:
         with stderr_lock:
-            print(f"{prefix}{msg}", file=sys.stderr)
+            print(f"{colored_prefix}{colors.colorize_log_line(msg)}", file=sys.stderr)
 
     return log
 
@@ -357,8 +353,6 @@ def _run_batch_parallel(
                 break
     finally:
         executor.shutdown(wait=False, cancel_futures=True)
-        # Keep our handler installed on the interrupt path so a later Ctrl+C
-        # (during atexit thread-join or output formatting) still hard-exits.
         if old_handler is not None and not stop_event.is_set():
             try:
                 signal.signal(signal.SIGINT, old_handler)
@@ -381,7 +375,7 @@ def format_batch_table(batch: BatchResult) -> str:
         if company_name:
             label += f" ({company_name})"
         if cr.error:
-            label += f"  [ERROR: {cr.error}]"
+            label += "  " + colors.stdout(f"[ERROR: {cr.error}]", colors.RED)
         lines.append(label)
 
         if cr.results:
@@ -402,9 +396,11 @@ def format_batch_table(batch: BatchResult) -> str:
             lines.append(header)
             lines.append(row_sep)
             for j, r in enumerate(cr.results, 1):
+                status_cell = f"{r.status.value.upper():<{col_status}}"
+                status_cell = colors.stdout(status_cell, colors.status_code(r.status))
                 lines.append(
                     f" {j:>2} │ {r.email:<{col_email}} │ {r.founder_name:<{col_founder}}"
-                    f" │ {r.status.value.upper():<{col_status}} │ {r.confidence:>{col_conf}}"
+                    f" │ {status_cell} │ {r.confidence:>{col_conf}}"
                 )
 
     lines.append("")
